@@ -14,13 +14,14 @@ test: coverage watch-tests
 coverage:
 	coverage run --source $(src) -m py.test
 	coverage html
-	open htmlcov/index.html
+	firefox htmlcov/index.html
 
 lint:
-	pylint $(src)
+	pylint $(src)man
+
 
 watch-tests:
-	watchmedo shell-command \
+1	watchmedo shell-command \
 		--command='make coverage' \
 		--recursive --drop --ignore-directories \
 		--patterns="*.py;*.rst" $(src) $(tests) $(docs)
