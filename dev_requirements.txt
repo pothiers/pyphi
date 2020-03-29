@@ -8,3 +8,6 @@ pylint
 isort
 black
 git+https://github.com/wmayner/sphinx_rtd_theme.git
+pandas==1.0.3
+networkx==2.4
+
