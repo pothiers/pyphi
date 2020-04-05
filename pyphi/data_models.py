@@ -91,7 +91,7 @@ def example_causation_tpm():
     return df
 
 
-class NU_Node():  # NU:: Not Used!!!
+class Node():  # NU:: Not Used!!!
     """Node in network. Supports more than just two states but downstream 
     software may be built for only binary nodes. Auto increment node id that 
     will be used as label if one isn't provided on creation.
@@ -99,7 +99,8 @@ class NU_Node():  # NU:: Not Used!!!
     _id = 0
 
     def __init__(self, label=None, numStates=2):
-        self._numStates = numStates
+        self.state = 0
+        self.states = list(range(numStates))
         if label is None:
             self._label = Node._id
             Node._id += 1
@@ -108,11 +109,21 @@ class NU_Node():  # NU:: Not Used!!!
 
     @property
     def numStates(self):
-        return self._numStates
+        return len(self.states)
+
+    @property
+    def state(self):
+        return self.state
+
+    @property
+    def states(self):
+        return self.states
 
     @property
     def label(self):
         return self._label
+
+
 
 
 def seq2(val):
@@ -141,22 +152,23 @@ def all_state_combos(node_lut):
 
 
 class CM():  # @@@ Allow this to be non-square (e.g. feed-forward)
-    """Connectivity Matrix
+    """Connectivity Matrix"""
+    # for node names
+    nn = list('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz') 
 
-    cm is Adjacency matrix as python list of lists """
-    def __init__(self, cm=None, node_labels=None):  # construct CM
+    def __init__(self, am=None, node_labels=None):  # construct CM
         """Construct CM
 
         Keyword Args:
-            cm (np.ndarray): The numpy array containing adjacency matrix
+            am (np.ndarray): The numpy array containing adjacency matrix
             node_labels (list): List of nodes where a node can be an 
                int, string, tuple, or list.  If tuple or list it must
                have 2 elements  (<node_label>, <number_of_states_of_node>)
         """        
 
-        if cm is None:
-            cm = np.zeros((2,2))
-        node_cnt = len(cm)
+        if am is None:
+            am = np.zeros((2,2))
+        node_cnt = len(am)
         labels = list(range(node_cnt))
         if node_labels is not None:
             assert node_cnt == len(node_labels), (
@@ -164,7 +176,7 @@ class CM():  # @@@ Allow this to be non-square (e.g. feed-forward)
                 f'len(cm) {node_cnt}')
             labels = node_labels
         self._node_labels = labels
-        self._df = pd.DataFrame(data=cm, index=labels, columns=labels)
+        self._df = pd.DataFrame(data=am, index=labels, columns=labels)
 
     def __len__(self):
         return len(self._node_labels)
@@ -196,6 +208,16 @@ class CM():  # @@@ Allow this to be non-square (e.g. feed-forward)
         self._df = pd.DataFrame(data=cm, index=labels, columns=labels)
         return self
         
+    def graph(self, pngfile=None):
+        """Return networkx DiGraph.    """
+        G = nx.DiGraph(self._df)
+        if pngfile is not None:
+            dotfile = pngfile + ".dot"
+            write_dot(G, dotfile)
+            cmd = (f'dot -Tpng -o{pngfile} {dotfile} ')
+            with open(pngfile,'w') as f:
+                subprocess.check_output(cmd, shell=True)
+        return G
 
 
     
@@ -335,18 +357,25 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
     def graph(self, min_prob=0.02, pngfile=None):
         """Return networkx DiGraph with edge.weight=probability.
         """
-        #!G = nx.DiGraph(self._df)
         df = self._df
         dod = dict()
         for i in self._df.index:
             d = dict()
             for j in df.columns:
-                prob = df[i][j]
-                if prob >= min_prob:
+                prob = df[j][i]
+                if prob > min_prob:
                     d[j] = {'label': f'{int(100*round(prob,2))}'}
             dod[i] = d
         G = nx.DiGraph(dod)
-                
+        if pngfile is not None:
+            dotfile = pngfile + ".dot"
+            write_dot(G, dotfile)
+            cmd = (f'dot -Tpng -o{pngfile} {dotfile} ')
+            with open(pngfile,'w') as f:
+                subprocess.check_output(cmd, shell=True)
+        return G
+
+        G = nx.DiGraph(self._df)
         if pngfile is not None:
             dotfile = pngfile + ".dot"
             write_dot(G, dotfile)
@@ -371,7 +400,8 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
 
     
 
-class Network():  # Replacement for network.py:Network()
+
+class Network():  
     """A network of nodes.
 
     Pandas baised matrices hold indices appropriate for each matrix.
@@ -401,8 +431,13 @@ class Network():  # Replacement for network.py:Network()
                 f'transitions: {self._tp.df.shape}')
 
     @property
+    def node_labels(self):
+        return self._node_labels
+
+    @property
     def tpm(self):
         return self._tp.df
+
     @property
     def cm(self):
         return self._cm.df
@@ -422,15 +457,15 @@ class Network():  # Replacement for network.py:Network()
         labels = self._node_labels
         return LegacyNetwork(tpm, cm=cm, node_labels=labels, purview_cache=None)
 
-    def cm_graph(self):
+    def cm_graph(self, pngfile=None):
         """Return networkx DiGraph with edge.weight=probability.
         """
-        return nx.DiGraph(_cm.df)
+        return self._cm.graph(pngfile)
 
-    def tpm_graph(self):
+    def tpm_graph(self, pngfile=None):
         """Return networkx DiGraph with edge.weight=probability.
         """
-        return nx.DiGraph(_tp.df)
+        return self._tp.graph(pngfile)
     
             
 def tryit():

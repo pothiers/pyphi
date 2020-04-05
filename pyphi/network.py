@@ -14,7 +14,8 @@ from .labels import NodeLabels
 from .tpm import is_state_by_state
 
 
-class Network:
+# Replacement for network.py:Network()
+class Network:  # @@@ Allow non-square
     """A network of nodes.
 
     Represents the network under analysis and holds auxilary data about it.
