@@ -1,8 +1,3 @@
-# see:
-#  https://github.com/wmayner/pyphi/blob/feature/implicit-tpm/pyphi/_tpm.py
-#    e.g. ~/Downloads/_tpm.py
-#  tpm.py
-
 # TODO:
 #  vitual matrix via func(state) -> state
 #  prev, next to iterate through square TPM
@@ -14,6 +9,8 @@
 #  States as HEX; for up to 16 states in compact idx easily converted to decimal
 #  DF index by state-vector (state for each node) could use MultiIndex EXCEPT
 #    this would not be scalable to high number of nodes.
+#
+# see: pyphi-design-poth.org
 
 # Python internals
 import itertools
@@ -22,9 +19,11 @@ from collections.abc import Sequence
 from functools import reduce
 import operator
 import subprocess
+from random import choice
 # External packages
 import networkx as nx
 from networkx.drawing.nx_pydot import write_dot
+from networkx.drawing.nx_pydot import pydot_layout
 import pandas as pd
 import numpy as np
 from numpy.random import choice as pchoice
@@ -62,7 +61,6 @@ from pyphi.convert import sbs2sbn, sbn2sbs
 def prod(iterable):
     return reduce(operator.mul, iterable, 1)
 
-
 # The binding between states and the nodes they represent must be maintained.
 # How???
 def example_causation_tpm():
@@ -91,40 +89,10 @@ def example_causation_tpm():
     return df
 
 
-class Node():  # NU:: Not Used!!!
-    """Node in network. Supports more than just two states but downstream 
-    software may be built for only binary nodes. Auto increment node id that 
-    will be used as label if one isn't provided on creation.
-    """
-    _id = 0
-
-    def __init__(self, label=None, numStates=2):
-        self.state = 0
-        self.states = list(range(numStates))
-        if label is None:
-            self._label = Node._id
-            Node._id += 1
-        else:
-            self._label = label 
-
-    @property
-    def numStates(self):
-        return len(self.states)
-
-    @property
-    def state(self):
-        return self.state
-
-    @property
-    def states(self):
-        return self.states
-
-    @property
-    def label(self):
-        return self._label
-
-
-
+#!
+#!    @property
+#!    def label(self):
+#!        return self._label
 
 def seq2(val):
     """True iff val is a non-string sequence of length 2"""
@@ -132,11 +100,18 @@ def seq2(val):
             and isinstance(val,Sequence)
             and (len(val)==2))
 
-def gen_node_lut(nodes):
-    lab_state_list  = map(lambda x: x if seq2(x) else (x,2), nodes)
+# lut, labs, combos = gen_node_lut(['A', 2, ('C', 3), [4, 6]])
+# all_state_combos(lut) => [...,(1, 1, 0, 5), (1, 1, 1, 0), (1, 1, 1, 1),...]
+def gen_node_lut(nodes, dspn=2):
+    """Return LookUp table to get node Label, StateCnt given Int.
+
+    `nodes` can be string, int, list, tuple.
+    If tuple or list it must have 2 elements (<label>, <number_states>).
+    """
+    lab_state_list  = map(lambda x: x if seq2(x) else (x,dspn), nodes)
     # lut[index] => (label,state_cnt) e.g. {0: ('A', 2),  1: ('C', 3)}
     lut = dict(enumerate(lab_state_list))
-    labels = [str(lab) for (lab,cnt) in lut.values()]
+    labels = [f'{lab}' for (lab,cnt) in lut.values()]
     num_combo_states = prod([cnt for (lab,cnt) in lut.values()])
     return lut, labels, num_combo_states
 
@@ -147,70 +122,92 @@ def all_state_combos(node_lut):
     hstates = (''.join(hex(s)[2:] for s in sv) for sv in states)
     return hstates
 
-# lut, labs, combos = gen_node_lut(['A', 2, ('C', 3), [4, 6]])
-# all_state_combos(lut) => [...,(1, 1, 0, 5), (1, 1, 1, 0), (1, 1, 1, 1),...]
+
+    
 
 
 class CM():  # @@@ Allow this to be non-square (e.g. feed-forward)
     """Connectivity Matrix"""
-    # for node names
-    nn = list('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz') 
 
-    def __init__(self, am=None, node_labels=None):  # construct CM
+    def __init__(self, am=None, in_nodes=None, out_nodes=None, nodes=None):
         """Construct CM
 
         Keyword Args:
-            am (np.ndarray): The numpy array containing adjacency matrix
-            node_labels (list): List of nodes where a node can be an 
-               int, string, tuple, or list.  If tuple or list it must
-               have 2 elements  (<node_label>, <number_of_states_of_node>)
-        """        
+            am (np.ndarray, lol): The numpy array containing adjacency matrix
+            in/out_nodes (list): List of nodes where a node can be an 
+            int, string, tuple, or list.  If tuple or list it must
+            have 2 elements  (<node_label>, <number_of_states_of_node>)
+            nodes (list): Convenience for setting both in/out_nodes to same val.
+        """
+        
+        nn = list('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz')
+        # node_lut[index] => (label,state_cnt) e.g. {0: ('A', 2),  1: ('C', 3)}
 
         if am is None:
             am = np.zeros((2,2))
-        node_cnt = len(am)
-        labels = list(range(node_cnt))
-        if node_labels is not None:
-            assert node_cnt == len(node_labels), (
-                f'Number of labels {len(node_labels)} must be same as '
-                f'len(cm) {node_cnt}')
-            labels = node_labels
-        self._node_labels = labels
-        self._df = pd.DataFrame(data=am, index=labels, columns=labels)
+        in_cnt,out_cnt = np.array(am).shape
+        if nodes:
+            in_nodes = nodes
+            out_nodes = nodes
+
+        if in_nodes is None:
+            in_nodes = [nn[i] for i in range(in_cnt)]
+        else:
+            assert in_cnt == len(in_nodes), (
+                f'Number of in_nodes {len(in_nodes)} must be same as '
+                f'rows of am {in_cnt}')
+        (self.in_node_lut , self.in_node_labels, S) = gen_node_lut(in_nodes)
+
+
+        if out_nodes is None:
+            out_nodes = [nn[i] for i in range(out_cnt)]
+        else:
+            assert out_cnt == len(out_nodes), (
+                f'Number of out_nodes {len(out_nodes)} must be same as '
+                f'rows of am {out_cnt}')
+        (self.out_node_lut, self.out_node_labels, S) = gen_node_lut(out_nodes)
+
+        self.df = pd.DataFrame(data=am,
+                               index=self.in_node_labels,
+                               columns=self.out_node_labels)
 
     def __len__(self):
-        return len(self._node_labels)
+        return len(self.in_node_labels + self.out_node_labels)
     
     def __repr__(self):
         # HEX outut of hash (unique to instance)
-        return (f'CM({self.__hash__():x}): {self._df.shape} '
-                f'labels: {self._node_labels}')
+        return (f'CM({self.__hash__():x}): {self.df.shape} '
+                f'labels: {self.in_node_labels}, {self.out_node_labels}')
+
+    #!@property
+    #!def connectivity_matrix(self):
+    #!    return self._df
+    #!df=connectivity_matrix
 
     @property
-    def connectivity_matrix(self):
-        return self._df
-    df=connectivity_matrix
-
+    def in_nodes(self):
+        return self.in_node_labels
+    
     @property
-    def node_labels(self):
-        return self._node_labels
-    labels=node_labels
+    def out_nodes(self):
+        return self.out_node_labels
     
     @property
     def to_legacy(self):
         """Pure numpy representation which ignores node labels."""
-        return self._df.to_numpy()
+        return self.df.to_numpy()
 
     def from_legacy(self, cm, labels=None):
         if labels is None:
             labels = list(range(len(cm)))
-        self._node_labels = labels
-        self._df = pd.DataFrame(data=cm, index=labels, columns=labels)
+        self.in_node_labels = labels
+        self.out_node_labels = labels
+        self.df = pd.DataFrame(data=cm, index=labels, columns=labels)
         return self
         
     def graph(self, pngfile=None):
         """Return networkx DiGraph.    """
-        G = nx.DiGraph(self._df)
+        G = nx.DiGraph(self.df)
         if pngfile is not None:
             dotfile = pngfile + ".dot"
             write_dot(G, dotfile)
@@ -225,7 +222,7 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
     """TRANSition PROBability matrix (and other formats)"""
     
     def __init__(self, in_nodes=None, out_nodes=None, probabilities=None,
-                 defaultspn=2):
+                defaultspn=2):
         """Create and store a Transition Probability Matrix
 
         This is a directed adjacency matrix from the states of in_nodes 
@@ -393,79 +390,206 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
         """Overwrite content of self to make this TPM contain legacy tpm.
         """
         self. __init__(in_nodes=labels, out_nodes=labels,
-                       probabilities=legacy_tpm,
-                       defaultspn=2)
+                       probabilities=legacy_tpm)
         return self
         
 
-    
 
-
-class Network():  
-    """A network of nodes.
-
-    Pandas baised matrices hold indices appropriate for each matrix.
+# This may be too heavy-weight for 10^5++ nodes.
+# NB: This does NOT hold the state of a node.  That would increase load
+# on processing multiple states -- each with its own set of nodes!
+# Instead, a statestr contains states for all nodes a specific time.
+#
+# InstanceVars: id, label, state_lut
+class Node():
+    """Node in network. Supports more than just two states but downstream 
+    software may be built for only binary nodes. Auto increment node id that 
+    will be used as label if one isn't provided on creation.
     """
-    
-    ### TPM: def __init__(self, in_nodes, out_nodes, probabilities, spn=2)
-    def __init__(self, tp=None, cm=None):
-        """Create Network
-        
-        Keyword Args:
-           tp (|TransProb|): Transition Probability container
-           cm (|CM|): Connectivity Matrix container
-        """
-        self._tp = tp  # Transition Probabilities DataFrame [tpm]
-        self._cm = cm  # Node Connectivity DataFrame [cm]
-        self._node_labels = None  # Node Labels ordered same as in States
+    _id = 0
 
-        if cm is None:
-            cm = CM()
-            self._cm = cm
-        self._node_labels = cm.node_labels
+    def __init__(self,label=None, num_states=2, id=None):
+        if id is None:
+            id = Node._id
+            Node._id += 1
+        self.id = id
+
+        if label is None:
+            label = id
+        self.label = label
+
+        self.num_states = num_states
+
+        # LUT may be overkill.  Just use an int? No, system state is chars.
+        # e.g. state_lut = {0: 'R', 1: 'G', 2: 'B'}
+        #!self.state_lut = dict(enumerate(range(num_states))) 
+
+    # Only intended to be used at end of processing.
+    # During processing, just use state index. 
+    #! def set_state_labels(self, state_labels):
+    #!     # lut[i] => state_label
+    #!     # e.g. {0: 'R', 1: 'G', 2: 'B'}
+    #!     self.state_lut = dict(enumerate(state_labels))
+    
+        
+    @property
+    def random_state(self):
+        return choice(range(self.num_states))
+
+    @property
+    def states(self):
+        """States supported by this node."""
+        return range(self.num_states)
 
     def __repr__(self):
-        # HEX outut of hash (unique to instance)
-        return (f'Network({self.__hash__():x}): '
-                f'node_connectivity: {self._cm.df.shape}, '
-                f'transitions: {self._tp.df.shape}')
+        return str(self.id)
+
+# Implementation:
+# A "state" is a hex string with each character representing the state of
+# a specific node. Therefore: there can be at most 16 node states.
+# InstanceVars: net
+class States():
+    """Holds info on all states for net.  Provides book-keeping operations.
+    """
+
+    def __init__(self, net=None):
+        self.net = net
+        
+    def gen_random_state(self):
+        chars = ['0'] * len(self.net)
+        for node in self.net.nodes:
+            chars[node.id] = f'{choice(node.states):x}'
+        return ''.join(chars)        
+            
+        
+    def flip_char(self, state, node_label, must_change=False):
+        """Change the char in STATE corresponding to NODE to a different
+        node state. Return new STATE."""
+        chars = list(state)
+        node = self.net.get_node(node_label)
+        avail = node.states
+        if must_change:
+            avail = [s for s in avail if s != state[node.id]]
+        chars[node.id] = f'{choice(avail):x}'
+        return ''.join(chars)        
+
+    def flip_chars(self, state, node_label_list, must_change=False):
+        #!print(f'DBG state={state}')
+        #!print(f'DBG node_label_list={node_label_list}')
+        chars = list(state)
+        for node_label in node_label_list:
+            node = self.net.get_node(node_label)
+            avail = node.states
+            if must_change:
+                avail = [s for s in avail if s != state[node.id]]
+            chars[node.id] = f'{choice(avail):x}'
+        return ''.join(chars)        
+            
+    def node_state(self, node_label, state):
+        node = self.net.get_node(node_label)
+        return tuple([int(state[node.id],16)])
+
+    @classmethod
+    def state_str2tuple(cls,statestr):
+        """RETURN tuple form of statestr. Only works for nodes with maximum
+        of 10 node states.
+        """
+        return tuple([int(c,16) for c in statestr])
+
+    @classmethod
+    def state_tuple2str(cls,statetuple):
+        """RETURN statestr form of statetuple.  """
+        return ''.join(hex(s)[2:] for s in statetuple)
+        
+
+    #! @classmethod
+    #! def state_from_node_states(cls, prev_state, ns_list):
+    #!     chars = list(prev_state)
+    #!     for (n,s) in ns_list:
+    #!         chars[net.nodeidx_lut[n]] = s
+    #!     return ''.join(chars)
+
+# InstanceVars: graph, states, node_lut
+class Net():
+    nn = list('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
+    
+    def __init__(self,
+                 edges = None, # connectivity edges; e.g. [(0,1), (1,2), (2,0)]
+                 N = 5, # Number of nodes
+                 graph = None, # networkx graph
+                 #nodes = None, # e.g. list('ABCD')
+                 #cm = None, # connectivity matrix
+                 SpN = 2,  # States per Node
+                 title = None, # Label for graph
+                 ):
+
+        if edges is None:
+            n_list = range(N)
+        else:
+            i,j = zip(*edges)
+            n_list = sorted(set(i+j))
+
+        nodes = [Node(id=i, label=Net.nn[i], num_states=SpN) for i in n_list]
+
+        # lut[label] -> Node
+        self.node_lut = dict((n.label,n) for n in nodes)
+            
+        if edges is None:
+            if nodes is None:
+                graph = nx.DiGraph(np.ones((N,N))) # fully connected
+            else:
+                graph = nx.empty_graph(N, create_using=nx.DiGraph())
+        else:
+            graph = nx.DiGraph(edges)
+        nx.relabel_nodes(graph,
+                         dict(zip(graph,[n.label for n in nodes])),
+                         copy=False) 
+        self.graph = graph
+        self.states = States(self)
+
+    
+    @property
+    def cm(self):
+        return nx.to_numpy_array(self.graph)
+
+    @property
+    def df(self):
+        return nx.to_pandas_adjacency(self.graph, nodelist=self.node_labels)
+
+    @property
+    def nodes(self):
+        return self.node_lut.values()
 
     @property
     def node_labels(self):
-        return self._node_labels
+        return [n.label for n in self.node_lut.values()]
 
-    @property
-    def tpm(self):
-        return self._tp.df
+    def successors(self, node_label):
+        return list(self.graph.neighbors(node_label))
 
-    @property
-    def cm(self):
-        return self._cm.df
-        
-    def from_legacy(self, legacyNetwork):
-        labels = list(legacyNetwork.node_labels)
-        self._cm = CM(legacyNetwork.cm, labels)
-        ltpm = sbn2sbs(legacyNetwork.tpm)
-        self._tp = TransProb(labels, labels, ltpm, defaultspn=2) # binary nodes
-        return self
+    def get_node(self, node_label):
+        return self.node_lut[node_label]
+    
+    def __len__(self):
+        return len(self.graph)
 
-    def to_legacy(self):
-        """Return old-style version of network for use in legacy functions.
-        """
-        tpm = sbs2sbn(self._tp.df.to_numpy())
-        cm = self._cm.df.to_numpy()
-        labels = self._node_labels
-        return LegacyNetwork(tpm, cm=cm, node_labels=labels, purview_cache=None)
+    def graph(self, pngfile=None):
+        """Return networkx DiGraph. Maybe write to PNG file."""
+        G = nx.DiGraph(self.graph)
+        if pngfile is not None:
+            dotfile = pngfile + ".dot"
+            write_dot(G, dotfile)
+            cmd = (f'dot -Tpng -o{pngfile} {dotfile} ')
+            with open(pngfile,'w') as f:
+                subprocess.check_output(cmd, shell=True)
+        return G
 
-    def cm_graph(self, pngfile=None):
-        """Return networkx DiGraph with edge.weight=probability.
-        """
-        return self._cm.graph(pngfile)
+    def draw(self):
+        nx.draw(self.graph,
+                pos=pydot_layout(self.graph),
+                # label='gnp_random_graph({N},{p})',
+                with_labels=True )
 
-    def tpm_graph(self, pngfile=None):
-        """Return networkx DiGraph with edge.weight=probability.
-        """
-        return self._tp.graph(pngfile)
     
             
 def tryit():
