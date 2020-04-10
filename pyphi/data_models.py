@@ -20,6 +20,7 @@ from functools import reduce
 import operator
 import subprocess
 from random import choice
+import re
 # External packages
 import networkx as nx
 from networkx.drawing.nx_pydot import write_dot
@@ -216,7 +217,11 @@ class CM():  # @@@ Allow this to be non-square (e.g. feed-forward)
                 subprocess.check_output(cmd, shell=True)
         return G
 
-
+def dfvalcolor(x):
+    if x > 0:
+        return 'background-color: green'
+    else:
+        return 'backround-color: white'
     
 class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
     """TRANSition PROBability matrix (and other formats)"""
@@ -262,10 +267,12 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
         self.istates = list(all_state_combos(self.in_node_lut))
         self.ostates = list(all_state_combos(self.out_node_lut))
         self._current = self.istates[0] # default start state
-        
-        self._df = pd.DataFrame(data=probabilities,
-                                index=self.istates,
-                                columns=self.ostates)
+
+        df = pd.DataFrame(data=probabilities,
+                          index=self.istates,
+                          columns=self.ostates)
+        # df.style.applymap(dfvalcolor)
+        self._df = df
         
     def __len__(self):
         return len(self.in_node_labels) * len(self.out_node_labels)
@@ -394,6 +401,17 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
         return self
         
 
+def or_func(*args):
+    invals = [v != 0 for v in args]
+    return reduce(operator.or_, invals)    
+
+def xor_func(*args):
+    invals = [v != 0 for v in args]
+    return reduce(operator.xor, invals)
+
+def and_func(*args):
+    invals = [v != 0 for v in args]
+    return reduce(operator.and_, invals)    
 
 # This may be too heavy-weight for 10^5++ nodes.
 # NB: This does NOT hold the state of a node.  That would increase load
@@ -408,7 +426,7 @@ class Node():
     """
     _id = 0
 
-    def __init__(self,label=None, num_states=2, id=None):
+    def __init__(self,label=None, num_states=2, id=None, func=or_func):
         if id is None:
             id = Node._id
             Node._id += 1
@@ -417,19 +435,8 @@ class Node():
         if label is None:
             label = id
         self.label = label
-
         self.num_states = num_states
-
-        # LUT may be overkill.  Just use an int? No, system state is chars.
-        # e.g. state_lut = {0: 'R', 1: 'G', 2: 'B'}
-        #!self.state_lut = dict(enumerate(range(num_states))) 
-
-    # Only intended to be used at end of processing.
-    # During processing, just use state index. 
-    #! def set_state_labels(self, state_labels):
-    #!     # lut[i] => state_label
-    #!     # e.g. {0: 'R', 1: 'G', 2: 'B'}
-    #!     self.state_lut = dict(enumerate(state_labels))
+        self.func = func 
     
         
     @property
@@ -444,6 +451,7 @@ class Node():
     def __repr__(self):
         return str(self.id)
 
+
 # Implementation:
 # A "state" is a hex string with each character representing the state of
 # a specific node. Therefore: there can be at most 16 node states.
@@ -454,7 +462,58 @@ class States():
 
     def __init__(self, net=None):
         self.net = net
+
+    # Slides show states varying by LEFT-MOST node fastest.
+    # I call this BACKWARDS since each string would have to be reversed
+    # to make sorted order match indices in Slides.
+    # 
+    # condition='...1' to fix D=1 and allow others to vary
+    def tpm(self, backwards=False, condition=None):
+        cand_states = [f'{i:04b}' for i in range(2**len(self.net))]
+        candids = [n.id for n in self.net.nodes] # CANdidate node ids
+        if condition is not None:
+            pat = re.compile(condition)
+            cand_states = [s for s in cand_states if re.match(pat,s)]
+            print(f'cand_states={cand_states}')
+            candids = [n.id for n,s in zip(self.net.nodes,condition) if s=='.']
         
+        G = nx.DiGraph()
+        G.add_nodes_from([self.substate(c,candids) for c in cand_states])
+        for state0 in cand_states:
+            state1 = self.next_state(state0)
+            G.add_edge(self.substate(state0, candids),
+                       self.substate(state1, candids))
+        print(f'edges={list(G.edges)}')
+        if backwards:
+            substates = [self.substate(s,candids)[::-1] for s in cand_states]
+        else:
+            substates = [self.substate(s,candids) for s in cand_states]
+        df = nx.to_pandas_adjacency(G, nodelist=substates, dtype=int)
+        dft = df.style.applymap(dfvalcolor)
+        nll = [n.label for n in self.net.nodes]
+        p = nx.to_numpy_array(G)
+        #tp = TransProb(in_nodes=nll, out_nodes=nll, probabilities=p)
+        return dft
+            
+    @classmethod
+    def substate(self, statestr, nodeid_list):
+        """Parts of STATE that correspond to nodes"""
+        return ''.join([statestr[i] for i in nodeid_list])
+
+    # assumes func are applied using orig_statestr inputs
+    def next_state(self, orig_statestr):
+        next_chars = list(orig_statestr) # write-only
+        G = self.net.graph
+        for node in self.net.nodes:
+            f = node.func
+            aa = [self.node_state(lab,orig_statestr)
+                  for lab in G.predecessors(node.label)]
+            #!res = f(*aa)
+            #!print(f'{node.label} {f.__name__}(*{aa}) \t=> {res}')
+            next_chars[node.id] = f'{f(*aa):x}'
+        return ''.join(next_chars)  
+
+    
     def gen_random_state(self):
         chars = ['0'] * len(self.net)
         for node in self.net.nodes:
@@ -487,7 +546,7 @@ class States():
             
     def node_state(self, node_label, state):
         node = self.net.get_node(node_label)
-        return tuple([int(state[node.id],16)])
+        return int(state[node.id],16)
 
     @classmethod
     def state_str2tuple(cls,statestr):
