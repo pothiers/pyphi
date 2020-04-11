@@ -90,10 +90,13 @@ def example_causation_tpm():
     return df
 
 
-#!
-#!    @property
-#!    def label(self):
-#!        return self._label
+# modified slightly from
+# https://docs.python.org/3/library/itertools.html?highlight=itertools
+def powerset(iterable):
+    "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
+    s = list(iterable)
+    return itertools.chain.from_iterable(itertools.combinations(s, r)
+                                         for r in range(len(s)+1))
 
 def seq2(val):
     """True iff val is a non-string sequence of length 2"""
@@ -217,23 +220,39 @@ class CM():  # @@@ Allow this to be non-square (e.g. feed-forward)
                 subprocess.check_output(cmd, shell=True)
         return G
 
-def dfvalcolor(x):
+def hilite_pos(x):
     if x > 0:
         return 'background-color: green'
     else:
         return 'backround-color: white'
-    
+
+def fill_using_mechanism(tp,states):
+    for i in tp._df.index:
+        state0 = i+'0'
+        state1 = states.next_state(state0)
+        d1 = int(state1[-1])
+        d0 = 0 if d1 > 0 else 1
+        tp._df.loc[i,:] = [d0,d1]
+
+
+# InstanceVars:
+#   net, _current, _df
+#   in_node_lut, in_node_labels,num_in_states,istates
+#   out_node_lut, out_node_labels,num_out_states,ostates
+#
+# @@@ num_*_states and *states can be derived from DF
 class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
     """TRANSition PROBability matrix (and other formats)"""
     
     def __init__(self, in_nodes=None, out_nodes=None, probabilities=None,
-                defaultspn=2):
+                net=None):
         """Create and store a Transition Probability Matrix
 
         This is a directed adjacency matrix from the states of in_nodes 
-        to the states of out_nodes.  The number of States Per Node 
-        (for all nodes) is given by spn. Thus the number of rows is:
-        spn^|in_nodes|.  The number of columns is: spn^|out_nodes|. 
+        to the states of out_nodes.  The number of states per node 
+        is given by Node().num_states. Thus the number of rows is
+        the product of num_states from in_nodes.  Number of columns
+        similarly from out_nodes.
         The probabilities parameter is an 2D array that must this shape.
         If not given, probabilities defaults to zeros of correct shape.
 
@@ -271,7 +290,7 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
         df = pd.DataFrame(data=probabilities,
                           index=self.istates,
                           columns=self.ostates)
-        # df.style.applymap(dfvalcolor)
+        # df.style.applymap(hilite_pos)
         self._df = df
         
     def __len__(self):
@@ -283,6 +302,8 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
                 f'in_labels: {self.in_node_labels} '
                 f'out_labels: {self.out_node_labels}')
 
+            
+        
     @property
     def state(self):
         return self._current
@@ -401,15 +422,24 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
         return self
         
 
+def noop_func(*args):
+    return None
+
 def or_func(*args):
+    if len(args) == 0:
+        return None # No result when no inputs
     invals = [v != 0 for v in args]
     return reduce(operator.or_, invals)    
 
 def xor_func(*args):
+    if len(args) == 0:
+        return None # No result when no inputs
     invals = [v != 0 for v in args]
     return reduce(operator.xor, invals)
 
 def and_func(*args):
+    if len(args) == 0:
+        return None # No result when no inputs
     invals = [v != 0 for v in args]
     return reduce(operator.and_, invals)    
 
@@ -426,7 +456,7 @@ class Node():
     """
     _id = 0
 
-    def __init__(self,label=None, num_states=2, id=None, func=or_func):
+    def __init__(self,label=None, num_states=2, id=None, func=noop_func):
         if id is None:
             id = Node._id
             Node._id += 1
@@ -452,6 +482,10 @@ class Node():
         return str(self.id)
 
 
+class Tp(): # @@@ Yet Another Transition Probability something
+    def __init__(self, net=None):
+        self.net = net        
+    
 # Implementation:
 # A "state" is a hex string with each character representing the state of
 # a specific node. Therefore: there can be at most 16 node states.
@@ -469,31 +503,32 @@ class States():
     # 
     # condition='...1' to fix D=1 and allow others to vary
     def tpm(self, backwards=False, condition=None):
+        """Condition and Marginalize-out node(s)"""
         cand_states = [f'{i:04b}' for i in range(2**len(self.net))]
         candids = [n.id for n in self.net.nodes] # CANdidate node ids
         if condition is not None:
             pat = re.compile(condition)
             cand_states = [s for s in cand_states if re.match(pat,s)]
-            print(f'cand_states={cand_states}')
+            #!print(f'cand_states={cand_states}')
             candids = [n.id for n,s in zip(self.net.nodes,condition) if s=='.']
-        
+        print(f'"Candidate System" = {[self.net.node(nid) for nid in candids]}')
         G = nx.DiGraph()
         G.add_nodes_from([self.substate(c,candids) for c in cand_states])
         for state0 in cand_states:
             state1 = self.next_state(state0)
             G.add_edge(self.substate(state0, candids),
                        self.substate(state1, candids))
-        print(f'edges={list(G.edges)}')
+        #! print(f'edges={list(G.edges)}')
         if backwards:
             substates = [self.substate(s,candids)[::-1] for s in cand_states]
         else:
             substates = [self.substate(s,candids) for s in cand_states]
         df = nx.to_pandas_adjacency(G, nodelist=substates, dtype=int)
-        dft = df.style.applymap(dfvalcolor)
+        dft = df.style.applymap(hilite_pos)
         nll = [n.label for n in self.net.nodes]
         p = nx.to_numpy_array(G)
         #tp = TransProb(in_nodes=nll, out_nodes=nll, probabilities=p)
-        return dft
+        return df
             
     @classmethod
     def substate(self, statestr, nodeid_list):
@@ -505,12 +540,12 @@ class States():
         next_chars = list(orig_statestr) # write-only
         G = self.net.graph
         for node in self.net.nodes:
-            f = node.func
             aa = [self.node_state(lab,orig_statestr)
                   for lab in G.predecessors(node.label)]
-            #!res = f(*aa)
+            result = node.func(*aa)
             #!print(f'{node.label} {f.__name__}(*{aa}) \t=> {res}')
-            next_chars[node.id] = f'{f(*aa):x}'
+            if result is not None:
+                next_chars[node.id] = f'{result:x}'
         return ''.join(next_chars)  
 
     
@@ -519,7 +554,12 @@ class States():
         for node in self.net.nodes:
             chars[node.id] = f'{choice(node.states):x}'
         return ''.join(chars)        
-            
+
+    def gen_all_states(self):
+        states = itertools.product(*(range(n.num_states)
+                                     for n in self.net.nodes))
+        return (''.join(hex(s)[2:] for s in sv) for sv in states)
+        
         
     def flip_char(self, state, node_label, must_change=False):
         """Change the char in STATE corresponding to NODE to a different
@@ -581,32 +621,32 @@ class Net():
                  SpN = 2,  # States per Node
                  title = None, # Label for graph
                  ):
-
+        G = nx.DiGraph()
         if edges is None:
             n_list = range(N)
         else:
             i,j = zip(*edges)
-            n_list = sorted(set(i+j))
-
+            minid = min(i)
+            maxid = max(j)
+            n_list = sorted(range(minid,maxid+1))
         nodes = [Node(id=i, label=Net.nn[i], num_states=SpN) for i in n_list]
 
         # lut[label] -> Node
         self.node_lut = dict((n.label,n) for n in nodes)
+        #invlut[i] -> label
+        invlut = dict(((v.id,v.label) for v in self.node_lut.values())) 
             
-        if edges is None:
-            if nodes is None:
-                graph = nx.DiGraph(np.ones((N,N))) # fully connected
-            else:
-                graph = nx.empty_graph(N, create_using=nx.DiGraph())
-        else:
-            graph = nx.DiGraph(edges)
-        nx.relabel_nodes(graph,
-                         dict(zip(graph,[n.label for n in nodes])),
-                         copy=False) 
-        self.graph = graph
+        G.add_nodes_from(self.node_lut.keys())
+        if edges is not None:
+            G.add_edges_from([(invlut[i],invlut[j]) for (i,j) in edges])
+        self.graph = G
         self.states = States(self)
 
-    
+    @classmethod
+    def candidate_mechanisms(cls, candidate_system):  
+        ps = powerset(set(candidate_system)) # iterator
+        return (ss for ss in ps if ss != ()) # remove empty, return GENERATOR 
+
     @property
     def cm(self):
         return nx.to_numpy_array(self.graph)
@@ -615,9 +655,13 @@ class Net():
     def df(self):
         return nx.to_pandas_adjacency(self.graph, nodelist=self.node_labels)
 
+
     @property
     def nodes(self):
         return self.node_lut.values()
+
+    def node(self, node_id):
+        return list(self.node_lut.keys())[node_id]
 
     @property
     def node_labels(self):
