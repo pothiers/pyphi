@@ -33,6 +33,7 @@ import pyphi
 from pyphi.examples import basic_noisy_selfloop_network
 from pyphi.network import Network as LegacyNetwork
 from pyphi.convert import sbs2sbn, sbn2sbs
+from pyphi.zap_tc import Zaptc
 
 # DEV notes:
 #
@@ -56,6 +57,7 @@ from pyphi.convert import sbs2sbn, sbn2sbs
 #   ESSENTIALY: 2d[state, node] => prob of node being ON
 #   This can only support binary nodes because prob is for single state 
 #   (other binary state = 1-prob)
+
 
 
 
@@ -425,6 +427,12 @@ class TransProb(): # @@@ This could be "virtual". Func instead of matrix.
 def noop_func(*args):
     return None
 
+def ma_func(*args):
+    """Mean Activation"""
+    if len(args) == 0:
+        return None # No result when no inputs
+    return sum(args)/len(args)
+
 def or_func(*args):
     if len(args) == 0:
         return None # No result when no inputs
@@ -456,7 +464,7 @@ class Node():
     """
     _id = 0
 
-    def __init__(self,label=None, num_states=2, id=None, func=noop_func):
+    def __init__(self,label=None, num_states=2, id=None, func=ma_func):
         if id is None:
             id = Node._id
             Node._id += 1
@@ -608,6 +616,50 @@ class States():
     #!         chars[net.nodeidx_lut[n]] = s
     #!     return ''.join(chars)
 
+class Gnet():
+    """Binary nodes only."""
+    nn = list('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
+
+    def __init__(self, nxgraph=None, tpm=None):
+        self.graph = nx.relabel_nodes(nxgraph, dict(enumerate(Gnet.nn)))
+        states = itertools.product(*[range(2) for i in self.graph.nodes])
+        hstates = [''.join(f'{s:x}' for s in sv)  for sv in states]
+        # TPM:: states x nodes
+        if tpm is None:
+            ns = len(hstates)
+            nn = len(self.graph)
+            #tpm = np.ones((ns, nn))
+            tpm = np.random.rand(ns,nn)
+        self.tpm = pd.DataFrame(tpm, index=hstates, columns=self.graph.nodes)
+
+    def draw(self):
+        nx.draw(self.graph, pos=pydot_layout(self.graph), with_labels=True)
+        return self
+
+    @property
+    def legacy_network(self):
+        return pyphi.Network(self.tpm.to_numpy(),
+                             nx.to_numpy_array(self.graph),
+                             node_labels=self.graph.nodes)
+
+    def discover_tpm(self, time_steps=10):
+        dd = dict((l,i) for (i,l) in enumerate(self.graph.nodes))
+        edges = [(dd[u],dd[v]) for (u,v) in self.graph.edges()]
+        
+        ztc = Zaptc(net=Net(edges=edges))
+        ztc.zapall(time_steps)
+        self.tpm = ztc.tpm_sbn   
+
+    def phi(self, state=None):
+        # first output state
+        if state is None:
+            state = [round(x) for x in self.tpm.iloc[0].to_list()] 
+        print(f'Using state={state}')
+        node_indices = tuple(range(len(self.graph)))
+        subsystem = pyphi.Subsystem(self.legacy_network, state, node_indices)
+        return pyphi.compute.phi(subsystem)
+        
+    
 # InstanceVars: graph, states, node_lut
 class Net():
     nn = list('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
