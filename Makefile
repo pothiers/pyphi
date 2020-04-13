@@ -21,7 +21,7 @@ lint:
 
 
 watch-tests:
-1	watchmedo shell-command \
+	watchmedo shell-command \
 		--command='make coverage' \
 		--recursive --drop --ignore-directories \
 		--patterns="*.py;*.rst" $(src) $(tests) $(docs)

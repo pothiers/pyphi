@@ -127,8 +127,6 @@ def all_state_combos(node_lut):
     states = itertools.product(*[range(cnt) for (lab,cnt) in node_lut.values()])
     hstates = (''.join(hex(s)[2:] for s in sv) for sv in states)
     return hstates
-
-
     
 
 
@@ -433,6 +431,12 @@ def ma_func(*args):
         return None # No result when no inputs
     return sum(args)/len(args)
 
+def maz_func(*args):
+    """Mean Activation gt zero"""
+    if len(args) == 0:
+        return None # No result when no inputs
+    return (sum(args)/len(args)) > 0
+
 def or_func(*args):
     if len(args) == 0:
         return None # No result when no inputs
@@ -616,6 +620,8 @@ class States():
     #!         chars[net.nodeidx_lut[n]] = s
     #!     return ''.join(chars)
 
+
+# InstanceVars: graph, hstates, tpm
 class Gnet():
     """Binary nodes only."""
     nn = list('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
@@ -624,6 +630,7 @@ class Gnet():
         self.graph = nx.relabel_nodes(nxgraph, dict(enumerate(Gnet.nn)))
         states = itertools.product(*[range(2) for i in self.graph.nodes])
         hstates = [''.join(f'{s:x}' for s in sv)  for sv in states]
+        self.hstates = hstates
         # TPM:: states x nodes
         if tpm is None:
             ns = len(hstates)
@@ -639,22 +646,23 @@ class Gnet():
     @property
     def legacy_network(self):
         return pyphi.Network(self.tpm.to_numpy(),
-                             nx.to_numpy_array(self.graph),
+                             cm=nx.to_numpy_array(self.graph),
                              node_labels=self.graph.nodes)
 
-    def discover_tpm(self, time_steps=10):
+    def discover_tpm(self, time_steps=10, verbose=False):
         dd = dict((l,i) for (i,l) in enumerate(self.graph.nodes))
         edges = [(dd[u],dd[v]) for (u,v) in self.graph.edges()]
         
         ztc = Zaptc(net=Net(edges=edges))
-        ztc.zapall(time_steps)
+        ztc.zapall(time_steps, verbose=verbose)
         self.tpm = ztc.tpm_sbn   
 
-    def phi(self, state=None):
+    def phi(self, statestr=None):
         # first output state
-        if state is None:
-            state = [round(x) for x in self.tpm.iloc[0].to_list()] 
-        print(f'Using state={state}')
+        if statestr is None:
+            statestr = choice(self.tpm.index)
+        state = [int(c) for c in list(statestr)] 
+        print(f'Calculating \u03A6 at state={state}')
         node_indices = tuple(range(len(self.graph)))
         subsystem = pyphi.Subsystem(self.legacy_network, state, node_indices)
         return pyphi.compute.phi(subsystem)
@@ -672,6 +680,7 @@ class Net():
                  #cm = None, # connectivity matrix
                  SpN = 2,  # States per Node
                  title = None, # Label for graph
+                 func = ma_func, # default mechanism for all nodes
                  ):
         G = nx.DiGraph()
         if edges is None:
@@ -681,7 +690,8 @@ class Net():
             minid = min(i)
             maxid = max(j)
             n_list = sorted(range(minid,maxid+1))
-        nodes = [Node(id=i, label=Net.nn[i], num_states=SpN) for i in n_list]
+        nodes = [Node(id=i, label=Net.nn[i], num_states=SpN, func=func)
+                 for i in n_list]
 
         # lut[label] -> Node
         self.node_lut = dict((n.label,n) for n in nodes)
@@ -692,7 +702,16 @@ class Net():
         if edges is not None:
             G.add_edges_from([(invlut[i],invlut[j]) for (i,j) in edges])
         self.graph = G
+        self.graph.name = title
         self.states = States(self)
+
+    def discover_tpm(self, time_steps=10, verbose=False):
+        #!dd = dict((n.label,n.id) for n in enumerate(self.nodes))
+        #!edges = [(dd[u],dd[v]) for (u,v) in self.graph.edges()]
+        ztc = Zaptc(net=self)
+        ztc.zapall(time_steps, verbose=verbose)
+        self.ztc = ztc
+        self.tpm = ztc.tpm_sbn   
 
     @classmethod
     def candidate_mechanisms(cls, candidate_system):  
@@ -744,7 +763,7 @@ class Net():
                 pos=pydot_layout(self.graph),
                 # label='gnp_random_graph({N},{p})',
                 with_labels=True )
-
+        return self
     
             
 def tryit():

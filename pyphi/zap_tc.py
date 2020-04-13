@@ -18,16 +18,37 @@ import pandas as pd
 from . import data_models as dm
 
 
+# InstanceVars: net, states, transition_counter, hstates
 class Zaptc():
-    """Change the state of a node or nodes and count state changes."""
+    """Change the state of a node or nodes and count state changes.
+
+ZAPTC EXPERIMENT:
+
+Zaptc ("zapticy") attempts to get useful counts of transitions to be
+used to create a TPM.  It does this by walking the network
+(initialized to a specific state) for a specified number of time
+steps. It does this without knowing anything about how a node's state
+is affected by its input (no knowledge of the node's mechanism). In
+terms of cause-effect, it trades definitive state changes for what
+MIGHT happen for a random and unknown mechanism. During the network
+walk, the state of a downstream node may change iff one of its
+upstream nodes changes state. Downstream state changes are stochastic.
+
+The result of a full zaptc experiment is a table indexed by (in-state,
+out-state) with a value of the number of times that state transition
+was encountered in the walk. One walk is done for each of the nodes in
+the system. At the start of the walk, a random system state is chosen
+and the state of the selected node is changed.
+
+The transition table is normalized into a TPM suitable for the rest of
+calculation.
+"""
 
     def __init__(self, net=None):
         self.net = net
         self.states = dm.States(net=net)
         # Could do large, distributed, zaptc jobs; merge counters afterwards
         self.transition_counter = Counter()
-        self.current_state = [0] * len(net)
-        self.tpg = None
 
         # Forced to provide all states in TPM to validate.py
         states = itertools.product(*[range(2) for i in range(len(self.net))])
@@ -67,14 +88,17 @@ class Zaptc():
         for s_node in successors:
             self.etc(s_node, state1, time-1)
     
-    def zapall(self, time):
+    def zapall(self, time, verbose=False):
+        print(f'Gathering system state transition counts (time={time}) ...')
         for node in self.net.nodes:
             # @@@ Should use more random states then num_nodes
             statestr = self.states.gen_random_state()
             ss = statestr.replace('0','.')
-            print(f'Zap node: {node.label} state: {ss}')
+            if verbose:
+                print(f'Zap node: {node.label} state: {ss}')
             self.zap_tc(node.label, statestr, time)
-
+        print('DONE')
+        
     def tpg(self):
         """Transition Probability Graph"""
         total = sum(self.transition_counter.values())
@@ -85,28 +109,28 @@ class Zaptc():
         return G
 
     @property
-    def tpm_sbn(self):
+    def tpm_sbn(self, pad=False):
         """Transition Probability Matrix (rectangular: States x Nodes).
         Binary nodes only.
         """
         N = len(self.net)        
         instates = set(s1 for s1,s2 in self.transition_counter.keys())
+    
+        df = pd.DataFrame(index=instates, columns=self.net.nodes).fillna(0)
 
         # Forced to create bigger array than needed because
         # validate.py errors if there isn't one
         # row for all POSSIBLE input states.
         # Processing COULD assume a missing row means zero probability
         # of transition
-        #
-        #!df = pd.DataFrame(index=instates, columns=self.net.nodes).fillna(0)
-        df = pd.DataFrame(index=self.hstates, columns=self.net.nodes).fillna(0)
-        #! for s0 in self.hstates:
-        #!     df.loc[s0] = [0] * N
-            
+        if pad:
+            df = pd.DataFrame(index=self.hstates,
+                              columns=self.net.nodes).fillna(0)
+
         for ((s0,s1), count) in self.transition_counter.items():
             cols = [n for c,n in zip(s1,self.net.nodes) if c=='1']
             df.loc[s0,cols] = df.loc[s0,cols] + count
 
         # return normalized form
         return df.div(df.sum(axis=1), axis=0)
-            
+    
