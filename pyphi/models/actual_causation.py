@@ -121,15 +121,38 @@ class AcRepertoireIrreducibilityAnalysis(cmp.Orderable):
         attrs = tuple(getattr(self, attr) for attr in _acria_attributes_for_eq)
         return hash(attrs)
 
+
     def to_json(self):
         """Return a JSON-serializable representation."""
-        return {attr: getattr(self, attr) for attr in _acria_attributes}
+        atts = [
+            "alpha",
+            "state",
+            #"direction",
+            "mechanism",
+            "purview",
+            #"partition",
+            "probability",
+            "partitioned_probability",
+        ]
+        dd = {attr: getattr(self, attr) for attr in atts}
+        dd['direction'] = self.direction.name
+        dd['partition'] = [{'mechanism':p.mechanism, 'purview':p.purview}
+                           for p in self.partition]
+        # 'AcRepertoireIrreducibilityAnalysis'
+        dd['.'] = self.__class__.__name__ 
+        return dd
 
-    def __repr__(self):
-        return fmt.make_repr(self, _acria_attributes)
-
-    def __str__(self):
-        return "RepertoireIrreducibilityAnalysis\n" + fmt.indent(fmt.fmt_ac_sia(self))
+    
+    #! def to_json(self):
+    #!     """Return a JSON-serializable representation."""
+    #!     return {attr: getattr(self, attr) for attr in _acria_attributes}
+    #!
+    #! def __repr__(self):
+    #!    return fmt.make_repr(self, _acria_attributes)
+    #!
+    #! def __str__(self):
+    #!    return "RepertoireIrreducibilityAnalysis\n" + fmt.indent(fmt.fmt_ac_sia(self))
+    
 
 
 def _null_ac_ria(state, direction, mechanism, purview, partition=None):
@@ -211,11 +234,11 @@ class CausalLink(cmp.Orderable):
     def node_labels(self):
         return self._ria.node_labels
 
-    def __repr__(self):
-        return fmt.make_repr(self, ["ria", "extended_purview"])
+    #! def __repr__(self):
+    #!    return fmt.make_repr(self, ["ria", "extended_purview"])
 
-    def __str__(self):
-        return "CausalLink\n" + fmt.indent(fmt.fmt_causal_link(self))
+    #!def __str__(self):
+    #!    return "CausalLink\n" + fmt.indent(fmt.fmt_causal_link(self))
 
     unorderable_unless_eq = AcRepertoireIrreducibilityAnalysis.unorderable_unless_eq
 
@@ -232,9 +255,16 @@ class CausalLink(cmp.Orderable):
         """An |CausalLink| is ``True`` if |alpha > 0|."""
         return greater_than_zero(self.alpha)
 
+    #! def to_json(self):
+    #!     """Return a JSON-serializable representation."""
+    #!     return {"ria": self.ria}
+
     def to_json(self):
-        """Return a JSON-serializable representation."""
-        return {"ria": self.ria}
+        return {'CausalLink':
+                {"alpha": self.alpha,
+                 "extended_purview": self._extended_purview,
+                 "ria": self._ria.to_json()
+                }}
 
 
 class Event(collections.namedtuple("Event", ["actual_cause", "actual_effect"])):
@@ -290,14 +320,17 @@ class Account(cmp.Orderable, collections.Sequence):
         """The set of irreducible effects in this |Account|."""
         return tuple(link for link in self if link.direction is Direction.EFFECT)
 
-    def __repr__(self):
-        return fmt.make_repr(self, ["causal_links"])
-
-    def __str__(self):
-        return fmt.fmt_account(self)
+    #! def __repr__(self):
+    #!    return fmt.make_repr(self, ["causal_links"])
+    #!
+    #!def __str__(self):
+    #!    return fmt.fmt_account(self)
+    #! 
+    #! def to_json(self):
+    #!     return {"causal_links": tuple(self)}
 
     def to_json(self):
-        return {"causal_links": tuple(self)}
+        return [cl.to_json() for cl in self.causal_links]
 
     @classmethod
     def from_json(cls, dct):
@@ -358,8 +391,8 @@ class AcSystemIrreducibilityAnalysis(cmp.Orderable):
         self.transition = transition
         self.cut = cut
 
-    def __repr__(self):
-        return fmt.make_repr(self, _ac_sia_attributes)
+        #! def __repr__(self):
+        #!return fmt.make_repr(self, _ac_sia_attributes)
 
     def __str__(self):
         return fmt.fmt_ac_sia(self)

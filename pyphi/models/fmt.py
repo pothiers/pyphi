@@ -44,6 +44,7 @@ NICE_DENOMINATORS = list(range(16)) + [16, 32, 64, 128]
 # pylint: enable=bad-whitespace
 
 
+
 def make_repr(self, attrs):
     """Construct a repr string.
 

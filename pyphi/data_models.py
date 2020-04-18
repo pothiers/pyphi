@@ -494,13 +494,40 @@ class Node():
         return str(self.id)
 
 
-class Tp(): # @@@ Yet Another Transition Probability something
+class Stp(): # @@@ Sparse Transition Probabilities (not matrix)
     def __init__(self, net=None):
-        self.net = net        
+        self.net = net
+        self.states = States(net)
+
+
+    def tps(self, node_label):
+        """Probabilities of Transition(S(t-1) => S(t)) given all possible
+        states of predecessors of NODE_LABELS."""
+        sscounter = Counter()
+        
+        #! preds = set(itertools.chain.from_iterable(
+        #!     self.net.graph.predecessors(n) for n in node_labels))
+        preds = set(self.net.graph.predecessors(node_label))
+        print(f'DBG: preds={preds}')
+        for s0 in self.states.gen_all_states(preds):
+            for s1 in sell.states.gen_all_states(node_labels):
+                print(f'DBG s0={s0} s1={s1}')
+                for nlab in node_labels:
+                    nstate = self.state.eval_node(nlab,s0)
+                sscounter.update([(s0,s1)])
+        return instates
+        
+        
+        
+    
     
 # Implementation:
 # A "state" is a hex string with each character representing the state of
 # a specific node. Therefore: there can be at most 16 node states.
+#
+# Should make use of nx.subgraph_view to filter nodes (with relabeling)
+# as we proceed thru slides.
+#
 # InstanceVars: net
 class States():
     """Holds info on all states for net.  Provides book-keeping operations.
@@ -514,8 +541,8 @@ class States():
     # to make sorted order match indices in Slides.
     # 
     # condition='...1' to fix D=1 and allow others to vary
-    def tpm(self, backwards=False, condition=None):
-        """Condition and Marginalize-out node(s)"""
+    def tpg(self, condition=None, draw=False):
+        """Transition Prob Graph. Condition and Marginalize-out node(s)"""
         cand_states = [f'{i:04b}' for i in range(2**len(self.net))]
         candids = [n.id for n in self.net.nodes] # CANdidate node ids
         if condition is not None:
@@ -523,25 +550,42 @@ class States():
             cand_states = [s for s in cand_states if re.match(pat,s)]
             #!print(f'cand_states={cand_states}')
             candids = [n.id for n,s in zip(self.net.nodes,condition) if s=='.']
-        print(f'"Candidate System" = {[self.net.node(nid) for nid in candids]}')
+        #!print(f'"Candidate System"={[self.net.node(nid) for nid in candids]}')
         G = nx.DiGraph()
         G.add_nodes_from([self.substate(c,candids) for c in cand_states])
         for state0 in cand_states:
             state1 = self.next_state(state0)
             G.add_edge(self.substate(state0, candids),
                        self.substate(state1, candids))
-        #! print(f'edges={list(G.edges)}')
+        if draw:
+            nx.draw(G, pos=pydot_layout(G), with_labels=True)             
+        return G
+
+    def tpm(self, backwards=False, condition=None):
+        G = self.tpg(condition=condition)
+        #! if backwards:
+        #!     substates = [self.substate(s,candids)[::-1] for s in cand_states]
+        #! else:
+        #!     substates = [self.substate(s,candids) for s in cand_states]
+        substates = [label for label in G.nodes]
         if backwards:
-            substates = [self.substate(s,candids)[::-1] for s in cand_states]
-        else:
-            substates = [self.substate(s,candids) for s in cand_states]
+            substates = [label[::-1] for label in substates]
         df = nx.to_pandas_adjacency(G, nodelist=substates, dtype=int)
-        dft = df.style.applymap(hilite_pos)
-        nll = [n.label for n in self.net.nodes]
-        p = nx.to_numpy_array(G)
-        #tp = TransProb(in_nodes=nll, out_nodes=nll, probabilities=p)
+        #! dft = df.style.applymap(hilite_pos)
+        #! nll = [n.label for n in self.net.nodes]
+        #! p = nx.to_numpy_array(G)
+        #!! tp = TransProb(in_nodes=nll, out_nodes=nll, probabilities=p)
         return df
-            
+
+    def effect_repertoire(self, graph, state):
+        return graph.succ[state].keys()
+
+    def purview(self, graph, node_labels):
+        #(instates, outstates) = zip(*graph.edges())
+        for instate,outstate in graph.edges():
+            pass
+        
+                
     @classmethod
     def substate(self, statestr, nodeid_list):
         """Parts of STATE that correspond to nodes"""
@@ -560,6 +604,13 @@ class States():
                 next_chars[node.id] = f'{result:x}'
         return ''.join(next_chars)  
 
+    def eval_node(self, node_label, statestr):
+        """Return the state that results from running the func of node
+        against the state of its predecessors according to statestr."""
+        aa = [self.node_state(lab,statestr)
+              for lab in G.predecessors(node_label)]
+        result = self.net.get_node(node_label).func(*aa)
+        return f'{result:x}'
     
     def gen_random_state(self):
         chars = ['0'] * len(self.net)
@@ -567,9 +618,12 @@ class States():
             chars[node.id] = f'{choice(node.states):x}'
         return ''.join(chars)        
 
-    def gen_all_states(self):
-        states = itertools.product(*(range(n.num_states)
-                                     for n in self.net.nodes))
+    def gen_all_states(self, node_labels=None):
+        if node_labels is None:
+            nodes = self.net.nodes
+        else:
+            nodes = [self.net.get_node(l) for l in node_labels] 
+        states = itertools.product(*(range(n.num_states) for n in nodes))
         return (''.join(hex(s)[2:] for s in sv) for sv in states)
         
         
@@ -667,7 +721,11 @@ class Gnet():
         subsystem = pyphi.Subsystem(self.legacy_network, state, node_indices)
         return pyphi.compute.phi(subsystem)
         
-    
+
+# Mechanism :: Nodes part of Input state
+# Purview :: Nodes part of Output state
+# Repertoire :: row of “local TPM” that corresponds to selected state
+#               of the mechanism
 # InstanceVars: graph, states, node_lut
 class Net():
     nn = list('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789')
@@ -680,7 +738,7 @@ class Net():
                  #cm = None, # connectivity matrix
                  SpN = 2,  # States per Node
                  title = None, # Label for graph
-                 func = ma_func, # default mechanism for all nodes
+                 func = maz_func, # default mechanism for all nodes
                  ):
         G = nx.DiGraph()
         if edges is None:
@@ -717,6 +775,8 @@ class Net():
     def candidate_mechanisms(cls, candidate_system):  
         ps = powerset(set(candidate_system)) # iterator
         return (ss for ss in ps if ss != ()) # remove empty, return GENERATOR 
+
+    
 
     @property
     def cm(self):

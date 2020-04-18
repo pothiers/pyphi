@@ -99,6 +99,7 @@ class Transition:
         conditioning the ``effect_system`` is then properly reset to
         ``after_state``.
     """
+        
 
     def __init__(
         self,
@@ -110,7 +111,6 @@ class Transition:
         cut=None,
         noise_background=False,
     ):
-
         self.network = network
         self.before_state = before_state
         self.after_state = after_state
@@ -174,8 +174,8 @@ class Transition:
             Direction.EFFECT: self.effect_system,
         }
 
-    def __repr__(self):
-        return fmt.fmt_transition(self)
+    #!def __repr__(self):
+    #!    return fmt.fmt_transition(self)
 
     def __str__(self):
         return repr(self)
@@ -212,16 +212,31 @@ class Transition:
     def node_labels(self):
         return self.network.node_labels
 
+
+    #! def to_json(self):
+    #!     """Return a JSON-serializable representation."""
+    #!     return {
+    #!         "network": self.network,
+    #!         "before_state": self.before_state,
+    #!         "after_state": self.after_state,
+    #!         "cause_indices": self.cause_indices,
+    #!         "effect_indices": self.effect_indices,
+    #!         "cut": self.cut,
+    #!     }
+
     def to_json(self):
-        """Return a JSON-serializable representation."""
-        return {
-            "network": self.network,
-            "before_state": self.before_state,
-            "after_state": self.after_state,
-            "cause_indices": self.cause_indices,
-            "effect_indices": self.effect_indices,
-            "cut": self.cut,
-        }
+        return {'before_state': self.before_state,
+                'after_state': self.after_state,
+                'system': self.system,
+                'cause_system': self.cause_system,
+                'cause_indices': self.cause_indices,
+                'effect_system': self.effect_system,
+                'effect_indices': self.effect_indices,
+                'node_indices': self.node_indices,
+                'node_labels': self.node_labels,
+                'cut': self.cut,
+                'network': f'<Network() {self.__hash__()}'  # self.network,
+                }
 
     def apply_cut(self, cut):
         """Return a cut version of this transition."""
