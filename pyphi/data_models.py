@@ -547,44 +547,55 @@ class States():
         return dict((n.label,s) for s,n in zip(statestr, nodes)
                     if n not in exclude)
         
-    # Slides show states varying by LEFT-MOST node fastest.
-    # I call this BACKWARDS since each string would have to be reversed
-    # to make sorted order match indices in Slides.
-    def tpg(self, condition=None, draw=False):
-        """Transition Prob Graph. Condition and Marginalize-out node(s)
-        Condition is statestr regexp.
-        """
-        if condition is not None:
-            self.condition = condition
-        #! # Full system states
-        cand_states = [f'{i:04b}' for i in range(2**len(self.net))]
-        #! cand_ids = [n.id for n in self.net.nodes] # CANdidate node ids
+    #! # Slides show states varying by LEFT-MOST node fastest.
+    #! # I call this BACKWARDS since each string would have to be reversed
+    #! # to make sorted order match indices in Slides.
+    #! def tpg(self, condition=None, draw=False):
+    #!     """Transition Prob Graph. Condition and Marginalize-out node(s)
+    #!     Condition is statestr regexp.
+    #!     """
+    #!     if condition is not None:
+    #!         self.condition = condition
+    #!     #! # Full system states
+    #!     cand_states = [f'{i:04b}' for i in range(2**len(self.net))]
+    #!     #! cand_ids = [n.id for n in self.net.nodes] # CANdidate node ids
+    #! 
+    #!     # condition=dict(D=1) to fix D=1 and allow others to vary
+    #!     # cond_rexp: e.g. '...1'; a regexp matching sys statestr
+    #! 
+    #!     cond_rexp = self.condition_rexp(self.condition)
+    #!     pat = re.compile(cond_rexp)
+    #!     cand_states = [s for s in cand_states if re.match(pat,s)]
+    #!     cand_ids = [n.id for n,s in zip(self.net.nodes,cond_rexp) if s=='.']
+    #!     G = nx.DiGraph()
+    #!     G.add_nodes_from([self.substate(c,cand_ids) for c in cand_states])
+    #!     for state0 in cand_states:
+    #!         state1 = self.next_state(state0)
+    #!         s0 = self.substate(state0, cand_ids)
+    #!         s1 = self.substate(state1, cand_ids)
+    #!         # Weight property is the count of connections between 2 states.
+    #!         # Multiple output states get combined on Conditioning
+    #!         if G.has_edge(s0,s1):
+    #!             G[s0][s1]['weight'] += 1
+    #!         else:
+    #!             G.add_edge(s0,s1,weight=1)
+    #!     self.graph = G
+    #!     if draw:
+    #!         nx.draw(G, pos=pydot_layout(G), with_labels=True)
+    #!     return G
+    #! 
+    #! def tpm(self, backwards=False, condition=None):
+    #!     """Condition is a dict with keys that are node labels, values that 
+    #!     are states for that node."""
+    #!     G = self.tpg(condition=condition)
+    #!     substates = [label for label in G.nodes]
+    #!     if backwards:
+    #!         substates = [label[::-1] for label in substates]
+    #!     df = nx.to_pandas_adjacency(G, nodelist=substates, dtype=int)
+    #!     return df
 
-        # condition=dict(D=1) to fix D=1 and allow others to vary
-        # cond_rexp: e.g. '...1'; a regexp matching sys statestr
 
-        cond_rexp = self.condition_rexp(self.condition)
-        pat = re.compile(cond_rexp)
-        cand_states = [s for s in cand_states if re.match(pat,s)]
-        cand_ids = [n.id for n,s in zip(self.net.nodes,cond_rexp) if s=='.']
-        G = nx.DiGraph()
-        G.add_nodes_from([self.substate(c,cand_ids) for c in cand_states])
-        for state0 in cand_states:
-            state1 = self.next_state(state0)
-            s0 = self.substate(state0, cand_ids)
-            s1 = self.substate(state1, cand_ids)
-            # Weight property is the count of connections between 2 states.
-            # Multiple output states get combined on Conditioning
-            if G.has_edge(s0,s1):
-                G[s0][s1]['weight'] += 1
-            else:
-                G.add_edge(s0,s1,weight=1)
-        self.graph = G
-        if draw:
-            nx.draw(G, pos=pydot_layout(G), with_labels=True)
-        return G
-
-    def tpg2(self, statestr,
+    def tpg(self, statestr,
              mechanism=None, candidate_system=None, purview=None,
              draw=False):
         if mechanism is None:
@@ -596,12 +607,14 @@ class States():
             cand_sys = mech
         else:
             cand_sys = self.net.get_nodes(candidate_system)
+        self.cand_sys = cand_sys
 
         if purview is None:
             pur = mech
         else:
             pur = self.net.get_nodes(purview)
-
+        self.pur = pur
+        
         bg_condition = self.state_to_dict(statestr,exclude=cand_sys)
         mech_state = self.substate(statestr, (n.id for n in mech))
 
@@ -622,31 +635,26 @@ class States():
             nx.draw(G, pos=pydot_layout(G), with_labels=True)
         return G
 
-    def tpm2(self, *args, **kwargs):
-        G = self.tpg2(*args, **kwargs)
+    def tpm(self, *args, backwards=False,**kwargs):
+        G = self.tpg(*args, **kwargs)
         ins,outs = zip(*G.edges())
-        instates = sorted(ins) 
-        outstates = sorted(outs) 
-        source = ''.join(n.label
-                    for n in self.net.get_nodes(kwargs['candidate_system']))
-        target = ''.join(n.label
-                    for n in self.net.get_nodes(kwargs['purview']))
+        print(f'cand_sys={self.cand_sys}, pur={self.pur}')
+        source = 'i' + ''.join(n.label for n in self.cand_sys)
+        target = 'o' + ''.join(n.label for n in self.pur)
+        print(f'source={source}, target={target}')
         df = nx.to_pandas_edgelist(G,
-                                   nodelist=list(ins)+list(outs),
                                    source=source,
-                                   target=target)
-                                   
-        return df.pivot(index=source, columns=target)
+                                   target=target,
+                                   nodelist=set(ins) | set(outs) )
 
-    def tpm(self, backwards=False, condition=None):
-        """Condition is a dict with keys that are node labels, values that 
-        are states for that node."""
-        G = self.tpg(condition=condition)
-        substates = [label for label in G.nodes]
+        mat = df.pivot(index=source, columns=target,
+                       values='weight').fillna(value=0).astype('int')
         if backwards:
-            substates = [label[::-1] for label in substates]
-        df = nx.to_pandas_adjacency(G, nodelist=substates, dtype=int)
-        return df
+            newindex= sorted(mat.index, key= lambda lab: lab[::-1])
+            newcol= sorted(mat.columns, key = lambda lab: lab[::-1])
+            return mat.reindex(index=newindex, columns=newcol)
+        return mat
+        #return df
 
 
     #! def effect_repertoire(self, purview=None, state=None):
