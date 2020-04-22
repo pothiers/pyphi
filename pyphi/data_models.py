@@ -531,75 +531,187 @@ class Stp(): # @@@ Sparse Transition Probabilities (not matrix)
 # InstanceVars: net
 class States():
     """Holds info on all states for net.  Provides book-keeping operations.
+
+    The statestr '23._' is interpreted as, Network contains 4 nodes and:
+      Node0.state2, Node1.state3, Node2.ANYstate, node3.IGNOREstate
     """
 
     def __init__(self, net=None):
         self.net = net
+        self.condition = {}
+        self.graph = None
+        self.state = None  # Selected (current) state
 
+    def state_to_dict(self, statestr, exclude=None):
+        nodes = self.net.nodes
+        return dict((n.label,s) for s,n in zip(statestr, nodes)
+                    if n not in exclude)
+        
     # Slides show states varying by LEFT-MOST node fastest.
     # I call this BACKWARDS since each string would have to be reversed
     # to make sorted order match indices in Slides.
-    # 
-    # condition='...1' to fix D=1 and allow others to vary
     def tpg(self, condition=None, draw=False):
-        """Transition Prob Graph. Condition and Marginalize-out node(s)"""
-        cand_states = [f'{i:04b}' for i in range(2**len(self.net))]
-        candids = [n.id for n in self.net.nodes] # CANdidate node ids
+        """Transition Prob Graph. Condition and Marginalize-out node(s)
+        Condition is statestr regexp.
+        """
         if condition is not None:
-            pat = re.compile(condition)
-            cand_states = [s for s in cand_states if re.match(pat,s)]
-            #!print(f'cand_states={cand_states}')
-            candids = [n.id for n,s in zip(self.net.nodes,condition) if s=='.']
-        #!print(f'"Candidate System"={[self.net.node(nid) for nid in candids]}')
+            self.condition = condition
+        #! # Full system states
+        cand_states = [f'{i:04b}' for i in range(2**len(self.net))]
+        #! cand_ids = [n.id for n in self.net.nodes] # CANdidate node ids
+
+        # condition=dict(D=1) to fix D=1 and allow others to vary
+        # cond_rexp: e.g. '...1'; a regexp matching sys statestr
+
+        cond_rexp = self.condition_rexp(self.condition)
+        pat = re.compile(cond_rexp)
+        cand_states = [s for s in cand_states if re.match(pat,s)]
+        cand_ids = [n.id for n,s in zip(self.net.nodes,cond_rexp) if s=='.']
         G = nx.DiGraph()
-        G.add_nodes_from([self.substate(c,candids) for c in cand_states])
+        G.add_nodes_from([self.substate(c,cand_ids) for c in cand_states])
         for state0 in cand_states:
             state1 = self.next_state(state0)
-            G.add_edge(self.substate(state0, candids),
-                       self.substate(state1, candids))
+            s0 = self.substate(state0, cand_ids)
+            s1 = self.substate(state1, cand_ids)
+            # Weight property is the count of connections between 2 states.
+            # Multiple output states get combined on Conditioning
+            if G.has_edge(s0,s1):
+                G[s0][s1]['weight'] += 1
+            else:
+                G.add_edge(s0,s1,weight=1)
+        self.graph = G
         if draw:
-            nx.draw(G, pos=pydot_layout(G), with_labels=True)             
+            nx.draw(G, pos=pydot_layout(G), with_labels=True)
         return G
 
+    def tpg2(self, statestr,
+             mechanism=None, candidate_system=None, purview=None,
+             draw=False):
+        if mechanism is None:
+            mech = self.net.nodes
+        else:
+            mech = self.net.get_nodes(mechanism)
+
+        if candidate_system is None:
+            cand_sys = mech
+        else:
+            cand_sys = self.net.get_nodes(candidate_system)
+
+        if purview is None:
+            pur = mech
+        else:
+            pur = self.net.get_nodes(purview)
+
+        bg_condition = self.state_to_dict(statestr,exclude=cand_sys)
+        mech_state = self.substate(statestr, (n.id for n in mech))
+
+        G = nx.DiGraph()
+
+        for instate in self.gen_all_states(n.label for n in cand_sys):
+            s0 = instate.replace('_','')
+            s1 = self.substate(self.next_state(instate,condition=bg_condition),
+                               (n.id for n in pur))
+            if G.has_edge(s0,s1):
+                G[s0][s1]['weight'] += 1
+            else:
+                G.add_edge(s0,s1,weight=1)
+            
+        print(f'inferered={dict(bg_cond=bg_condition, mech_state=mech_state)}')
+        self.graph = G
+        if draw:
+            nx.draw(G, pos=pydot_layout(G), with_labels=True)
+        return G
+
+    def tpm2(self, *args, **kwargs):
+        G = self.tpg2(*args, **kwargs)
+        ins,outs = zip(*G.edges())
+        instates = sorted(ins) 
+        outstates = sorted(outs) 
+        source = ''.join(n.label
+                    for n in self.net.get_nodes(kwargs['candidate_system']))
+        target = ''.join(n.label
+                    for n in self.net.get_nodes(kwargs['purview']))
+        df = nx.to_pandas_edgelist(G,
+                                   nodelist=list(ins)+list(outs),
+                                   source=source,
+                                   target=target)
+                                   
+        return df.pivot(index=source, columns=target)
+
     def tpm(self, backwards=False, condition=None):
+        """Condition is a dict with keys that are node labels, values that 
+        are states for that node."""
         G = self.tpg(condition=condition)
-        #! if backwards:
-        #!     substates = [self.substate(s,candids)[::-1] for s in cand_states]
-        #! else:
-        #!     substates = [self.substate(s,candids) for s in cand_states]
         substates = [label for label in G.nodes]
         if backwards:
             substates = [label[::-1] for label in substates]
         df = nx.to_pandas_adjacency(G, nodelist=substates, dtype=int)
-        #! dft = df.style.applymap(hilite_pos)
-        #! nll = [n.label for n in self.net.nodes]
-        #! p = nx.to_numpy_array(G)
-        #!! tp = TransProb(in_nodes=nll, out_nodes=nll, probabilities=p)
         return df
 
-    def effect_repertoire(self, graph, state):
-        return graph.succ[state].keys()
 
-    def purview(self, graph, node_labels):
-        #(instates, outstates) = zip(*graph.edges())
-        for instate,outstate in graph.edges():
-            pass
+    #! def effect_repertoire(self, purview=None, state=None):
+    #!     if self.graph is None:
+    #!         G = self.tpg(condition=self.condition)
+    #!         self.graph = G
+    #!     if purview is None:
+    #!         return self.graph.succ[state].keys()
+    #!     else:
+    #!         # nodes not in purview (combine these in out state)
+    #!         margin = set(self.net.nodes) - self.get_nodes(purview)
+    #! 
+    #! 
+    #!     for state0,state1 in self.graph.edges():
+    #!         next_regexp
+    #!         s1 = self.substate(state1)
         
-                
+    def purview(self, out_node_labels):
+        if self.graph is None:
+            G = self.tpg(condition=self.condition)
+            self.graph = G
+        G = self.graph
+
+        #!instates,outstates = zip(*self.graph.edges())
+        #!cond_rexp = self.condition_rexp(self.condition)
+        #!nodes = [self.node.get_node(label) for label in out_node_labels]
+        #!out_ids = [n.id for n,s in zip(nodes,cond_rexp) if s=='.']
+
+        for state0,state1 in G.edges():
+            s1 = self.substate(state1, cand_ids)
+            # Weight property is the count of connections between 2 states.
+            # Multiple output states get combined on Conditioning
+            if G.has_edge(s0,s1):
+                G[s0][s1]['weight'] += 1
+            else:
+                G.add_edge(s0,s1,weight=1)
+        
+    
+    def condition_rexp(self, cond_dict):
+        lablut = dict((n.id,n.label) for n in self.net.nodes)
+        cond = dict((k,f'{v:x}') for k,v in cond_dict.items())
+        return ''.join(cond.get(lablut[i],'.') for i in range(len(lablut)))
+
     @classmethod
     def substate(self, statestr, nodeid_list):
-        """Parts of STATE that correspond to nodes"""
+        """Part of system state (statestr) that correspond to nodes"""
         return ''.join([statestr[i] for i in nodeid_list])
 
+    def apply_condition(self, condition, cur_statestr):
+        next_chars = list(cur_statestr) # write-only
+        for k,v in condition.items():
+            next_chars[self.net.get_node(k).id] = v
+        return ''.join(next_chars)
+    
     # assumes func are applied using orig_statestr inputs
-    def next_state(self, orig_statestr):
-        next_chars = list(orig_statestr) # write-only
+    def next_state(self, cur_statestr, condition={}):
+        """condition will overwrite cur_statestr before applying func"""
+        statestr = self.apply_condition(condition, cur_statestr)
+        next_chars = list(statestr) # write-only
         G = self.net.graph
         for node in self.net.nodes:
-            aa = [self.node_state(lab,orig_statestr)
-                  for lab in G.predecessors(node.label)]
-            result = node.func(*aa)
-            #!print(f'{node.label} {f.__name__}(*{aa}) \t=> {res}')
+            args = [self.node_state(lab,statestr)
+                    for lab in G.predecessors(node.label)]
+            result = node.func(*args)
+            #!print(f'{node.label} {f.__name__}(*{args}) \t=> {res}')
             if result is not None:
                 next_chars[node.id] = f'{result:x}'
         return ''.join(next_chars)  
@@ -607,9 +719,9 @@ class States():
     def eval_node(self, node_label, statestr):
         """Return the state that results from running the func of node
         against the state of its predecessors according to statestr."""
-        aa = [self.node_state(lab,statestr)
+        args = [self.node_state(lab,statestr)
               for lab in G.predecessors(node_label)]
-        result = self.net.get_node(node_label).func(*aa)
+        result = self.net.get_node(node_label).func(*args)
         return f'{result:x}'
     
     def gen_random_state(self):
@@ -617,15 +729,28 @@ class States():
         for node in self.net.nodes:
             chars[node.id] = f'{choice(node.states):x}'
         return ''.join(chars)        
-
+    
     def gen_all_states(self, node_labels=None):
-        if node_labels is None:
-            nodes = self.net.nodes
-        else:
-            nodes = [self.net.get_node(l) for l in node_labels] 
-        states = itertools.product(*(range(n.num_states) for n in nodes))
-        return (''.join(hex(s)[2:] for s in sv) for sv in states)
+        """States produced always have one character per network node.
+        But, all characters that do NOT correspond to node_labels are '_'.
+        If node_labels is a subset of all nodes, the resulting list of 
+        states would have duplicates. Only unique states are returned.
+        """
+        states = [list(tup)
+                  for tup in itertools.product(*[[f'{i:x}'
+                                                  for i in range(n.num_states)]
+                                                 for n in self.net.nodes])]
+        if node_labels is not None:
+            bg = set(self.net.nodes) - set(self.net.get_nodes(node_labels))
+            for node in bg:
+                for sv in states:
+                    sv[node.id] = '_'
+
+        #return (''.join(hex(s)[2:] for s in sv) for sv in states)
+        #return set(''.join(f'{s:x}' for s in sv) for sv in states)
         
+        return set([''.join(sv) for sv in states])
+        #return states
         
     def flip_char(self, state, node_label, must_change=False):
         """Change the char in STATE corresponding to NODE to a different
@@ -789,7 +914,8 @@ class Net():
 
     @property
     def nodes(self):
-        return self.node_lut.values()
+        """Return list of all nodes in ID order."""
+        return sorted(self.node_lut.values(), key=lambda n: n.id)
 
     def node(self, node_id):
         return list(self.node_lut.keys())[node_id]
@@ -803,6 +929,9 @@ class Net():
 
     def get_node(self, node_label):
         return self.node_lut[node_label]
+
+    def get_nodes(self, node_labels):
+        return [self.node_lut[label] for label in node_labels]
     
     def __len__(self):
         return len(self.graph)
