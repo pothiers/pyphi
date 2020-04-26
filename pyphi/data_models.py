@@ -641,7 +641,7 @@ class States():
         print(f'cand_sys={self.cand_sys}, pur={self.pur}')
         source = 'i' + ''.join(n.label for n in self.cand_sys)
         target = 'o' + ''.join(n.label for n in self.pur)
-        print(f'source={source}, target={target}')
+        #print(f'source={source}, target={target}')
         df = nx.to_pandas_edgelist(G,
                                    source=source,
                                    target=target,

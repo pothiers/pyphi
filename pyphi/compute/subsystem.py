@@ -246,7 +246,7 @@ def _sia(cache_key, subsystem):
     """
     # pylint: disable=unused-argument
 
-    log.info("Calculating big-phi data for %s...", subsystem)
+    log.info(f"Calculating big-phi data for {subsystem}...")
 
     # Check for degenerate cases
     # =========================================================================
