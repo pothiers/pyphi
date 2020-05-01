@@ -430,12 +430,14 @@ def ma_func(*args):
     if len(args) == 0:
         return None # No result when no inputs
     return sum(args)/len(args)
+copy_func = ma_func #  Indended to have exactly one input node. 
 
 def maz_func(*args):
     """Mean Activation gt zero"""
     if len(args) == 0:
         return None # No result when no inputs
     return (sum(args)/len(args)) > 0
+
 
 def or_func(*args):
     if len(args) == 0:
@@ -460,7 +462,7 @@ def and_func(*args):
 # on processing multiple states -- each with its own set of nodes!
 # Instead, a statestr contains states for all nodes a specific time.
 #
-# InstanceVars: id, label, state_lut
+# InstanceVars: id, label, num_states, func
 class Node():
     """Node in network. Supports more than just two states but downstream 
     software may be built for only binary nodes. Auto increment node id that 
@@ -539,7 +541,7 @@ class States():
     def __init__(self, net=None):
         self.net = net
         self.condition = {}
-        self.graph = None
+        self.graph = net.graph
         self.state = None  # Selected (current) state
 
     def state_to_dict(self, statestr, exclude=None):
@@ -547,54 +549,6 @@ class States():
         return dict((n.label,s) for s,n in zip(statestr, nodes)
                     if n not in exclude)
         
-    #! # Slides show states varying by LEFT-MOST node fastest.
-    #! # I call this BACKWARDS since each string would have to be reversed
-    #! # to make sorted order match indices in Slides.
-    #! def tpg(self, condition=None, draw=False):
-    #!     """Transition Prob Graph. Condition and Marginalize-out node(s)
-    #!     Condition is statestr regexp.
-    #!     """
-    #!     if condition is not None:
-    #!         self.condition = condition
-    #!     #! # Full system states
-    #!     cand_states = [f'{i:04b}' for i in range(2**len(self.net))]
-    #!     #! cand_ids = [n.id for n in self.net.nodes] # CANdidate node ids
-    #! 
-    #!     # condition=dict(D=1) to fix D=1 and allow others to vary
-    #!     # cond_rexp: e.g. '...1'; a regexp matching sys statestr
-    #! 
-    #!     cond_rexp = self.condition_rexp(self.condition)
-    #!     pat = re.compile(cond_rexp)
-    #!     cand_states = [s for s in cand_states if re.match(pat,s)]
-    #!     cand_ids = [n.id for n,s in zip(self.net.nodes,cond_rexp) if s=='.']
-    #!     G = nx.DiGraph()
-    #!     G.add_nodes_from([self.substate(c,cand_ids) for c in cand_states])
-    #!     for state0 in cand_states:
-    #!         state1 = self.next_state(state0)
-    #!         s0 = self.substate(state0, cand_ids)
-    #!         s1 = self.substate(state1, cand_ids)
-    #!         # Weight property is the count of connections between 2 states.
-    #!         # Multiple output states get combined on Conditioning
-    #!         if G.has_edge(s0,s1):
-    #!             G[s0][s1]['weight'] += 1
-    #!         else:
-    #!             G.add_edge(s0,s1,weight=1)
-    #!     self.graph = G
-    #!     if draw:
-    #!         nx.draw(G, pos=pydot_layout(G), with_labels=True)
-    #!     return G
-    #! 
-    #! def tpm(self, backwards=False, condition=None):
-    #!     """Condition is a dict with keys that are node labels, values that 
-    #!     are states for that node."""
-    #!     G = self.tpg(condition=condition)
-    #!     substates = [label for label in G.nodes]
-    #!     if backwards:
-    #!         substates = [label[::-1] for label in substates]
-    #!     df = nx.to_pandas_adjacency(G, nodelist=substates, dtype=int)
-    #!     return df
-
-
     def tpg(self, statestr,
              mechanism=None, candidate_system=None, purview=None,
              draw=False):
@@ -657,21 +611,6 @@ class States():
         #return df
 
 
-    #! def effect_repertoire(self, purview=None, state=None):
-    #!     if self.graph is None:
-    #!         G = self.tpg(condition=self.condition)
-    #!         self.graph = G
-    #!     if purview is None:
-    #!         return self.graph.succ[state].keys()
-    #!     else:
-    #!         # nodes not in purview (combine these in out state)
-    #!         margin = set(self.net.nodes) - self.get_nodes(purview)
-    #! 
-    #! 
-    #!     for state0,state1 in self.graph.edges():
-    #!         next_regexp
-    #!         s1 = self.substate(state1)
-        
     def purview(self, out_node_labels):
         if self.graph is None:
             G = self.tpg(condition=self.condition)
@@ -709,7 +648,7 @@ class States():
             next_chars[self.net.get_node(k).id] = v
         return ''.join(next_chars)
     
-    # assumes func are applied using orig_statestr inputs
+    # assumes func are applied using cur_statestr as inputs
     def next_state(self, cur_statestr, condition={}):
         """condition will overwrite cur_statestr before applying func"""
         statestr = self.apply_condition(condition, cur_statestr)
@@ -724,14 +663,25 @@ class States():
                 next_chars[node.id] = f'{result:x}'
         return ''.join(next_chars)  
 
+
     def eval_node(self, node_label, statestr):
         """Return the state that results from running the func of node
         against the state of its predecessors according to statestr."""
+        G = self.graph
         args = [self.node_state(lab,statestr)
               for lab in G.predecessors(node_label)]
         result = self.net.get_node(node_label).func(*args)
         return f'{result:x}'
     
+    def node_tpm(self, node_label, statestr):
+        node = self.net.get_node(node_label)
+        args = [self.node_state(lab,statestr)
+              for lab in self.graph.predecessors(node_label)]
+        outstate = node.func(*args)
+        node_state_probs = [0.0] * node.num_states
+        node_state_probs[outstate] = 1.0
+        return node_state_probs
+
     def gen_random_state(self):
         chars = ['0'] * len(self.net)
         for node in self.net.nodes:
@@ -866,7 +816,7 @@ class Net():
     def __init__(self,
                  edges = None, # connectivity edges; e.g. [(0,1), (1,2), (2,0)]
                  N = 5, # Number of nodes
-                 graph = None, # networkx graph
+                 #graph = None, # networkx graph
                  #nodes = None, # e.g. list('ABCD')
                  #cm = None, # connectivity matrix
                  SpN = 2,  # States per Node
@@ -894,8 +844,10 @@ class Net():
             G.add_edges_from([(invlut[i],invlut[j]) for (i,j) in edges])
         self.graph = G
         self.graph.name = title
-        self.states = States(self)
+        self.states = States(net=self)
 
+
+        
     def discover_tpm(self, time_steps=10, verbose=False):
         #!dd = dict((n.label,n.id) for n in enumerate(self.nodes))
         #!edges = [(dd[u],dd[v]) for (u,v) in self.graph.edges()]
