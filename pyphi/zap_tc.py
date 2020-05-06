@@ -108,10 +108,9 @@ calculation.
             weight='p')
         return G
 
-    @property
     def tpm_sbn(self, pad=False):
         """Transition Probability Matrix (rectangular: States x Nodes).
-        Binary nodes only.
+        Binary nodes only. DataFrame type.
         """
         N = len(self.net)        
         instates = set(s1 for s1,s2 in self.transition_counter.keys())
@@ -122,15 +121,21 @@ calculation.
         # validate.py errors if there isn't one
         # row for all POSSIBLE input states.
         # Processing COULD assume a missing row means zero probability
-        # of transition
+        # of transition.
+        # pyphi.validate.py:state_reachable(subsystem) complains
+        # if a row contains all zeros. It says state cannot be reached even
+        # though given state is index of DF. Forced me to fill with 0.5
+        # to satisfy state_reachable()
         if pad:
             df = pd.DataFrame(index=self.hstates,
-                              columns=self.net.nodes).fillna(0)
+                              columns=self.net.nodes).fillna(0.5) #@@@
 
         for ((s0,s1), count) in self.transition_counter.items():
             cols = [n for c,n in zip(s1,self.net.nodes) if c=='1']
             df.loc[s0,cols] = df.loc[s0,cols] + count
 
         # return normalized form
-        return df.div(df.sum(axis=1), axis=0)
+
+        dfnorm = df.div(df.sum(axis=1), axis=0)
+        return dfnorm.fillna(0)
     

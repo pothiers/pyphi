@@ -16,11 +16,14 @@
 import itertools
 from random import random
 from collections.abc import Sequence
+from collections import Counter, defaultdict
 from functools import reduce
 import operator
 import subprocess
 from random import choice
 import re
+from pprint import pformat
+from copy import copy
 # External packages
 import networkx as nx
 from networkx.drawing.nx_pydot import write_dot
@@ -31,7 +34,7 @@ from numpy.random import choice as pchoice
 # Local packages
 import pyphi
 from pyphi.examples import basic_noisy_selfloop_network
-from pyphi.network import Network as LegacyNetwork
+from pyphi.network import Network 
 from pyphi.convert import sbs2sbn, sbn2sbs
 from pyphi.zap_tc import Zaptc
 
@@ -436,26 +439,45 @@ def maz_func(*args):
     """Mean Activation gt zero"""
     if len(args) == 0:
         return None # No result when no inputs
-    return (sum(args)/len(args)) > 0
+    return (1 if ((sum(args)/len(args)) > 0) else 0)
+
+def tri_func(*args):
+    """Count input states. Produces 3 states"""
+    if len(args) == 0:
+        return 0
+    if sum(args) == 0:
+        return 0
+    if sum(args) == 1:
+        return 1
+    else:
+        return 2
 
 
 def or_func(*args):
     if len(args) == 0:
         return None # No result when no inputs
     invals = [v != 0 for v in args]
-    return reduce(operator.or_, invals)    
+    return int(reduce(operator.or_, invals)    )
+
+# COPY in papers seems to assume exactly one in-edge
+def copy_func(*args):
+    if len(args) == 0:
+        return None # No result when no inputs
+    invals = [v != 0 for v in args]
+    return int(reduce(operator.or_, invals))
+
 
 def xor_func(*args):
     if len(args) == 0:
         return None # No result when no inputs
     invals = [v != 0 for v in args]
-    return reduce(operator.xor, invals)
+    return int(reduce(operator.xor, invals))
 
 def and_func(*args):
     if len(args) == 0:
         return None # No result when no inputs
     invals = [v != 0 for v in args]
-    return reduce(operator.and_, invals)    
+    return int(reduce(operator.and_, invals))
 
 # This may be too heavy-weight for 10^5++ nodes.
 # NB: This does NOT hold the state of a node.  That would increase load
@@ -494,6 +516,9 @@ class Node():
 
     def __repr__(self):
         return str(self.id)
+
+    def __str__(self):
+        return f'{self.label}({self.id}): {self.num_states},{self.func.__name__}'
 
 
 class Stp(): # @@@ Sparse Transition Probabilities (not matrix)
@@ -773,8 +798,13 @@ class Gnet():
             ns = len(hstates)
             nn = len(self.graph)
             #tpm = np.ones((ns, nn))
-            tpm = np.random.rand(ns,nn)
-        self.tpm = pd.DataFrame(tpm, index=hstates, columns=self.graph.nodes)
+            #tpm = np.random.rand(ns,nn)
+            self.tpm = self.discover_tpm()
+        else:            
+            self.tpm =  pd.DataFrame(tpm,
+                                     index=self.hstates,
+                                     columns=self.graph.nodes)
+
 
     def draw(self):
         nx.draw(self.graph, pos=pydot_layout(self.graph), with_labels=True)
@@ -782,17 +812,20 @@ class Gnet():
 
     @property
     def legacy_network(self):
-        return pyphi.Network(self.tpm.to_numpy(),
+        return LegacyNetwork(self.tpm.to_numpy(),
                              cm=nx.to_numpy_array(self.graph),
                              node_labels=self.graph.nodes)
 
+        
     def discover_tpm(self, time_steps=10, verbose=False):
+        print(f'discover_tpm of {len(self.graph.nodes)} nodes over {time_steps} time_steps')
         dd = dict((l,i) for (i,l) in enumerate(self.graph.nodes))
         edges = [(dd[u],dd[v]) for (u,v) in self.graph.edges()]
         
         ztc = Zaptc(net=Net(edges=edges))
         ztc.zapall(time_steps, verbose=verbose)
-        self.tpm = ztc.tpm_sbn   
+        self.tpm = ztc.tpm_sbn(pad=True)
+        return self.tpm
 
     def phi(self, statestr=None):
         # first output state
@@ -804,7 +837,7 @@ class Gnet():
         subsystem = pyphi.Subsystem(self.legacy_network, state, node_indices)
         return pyphi.compute.phi(subsystem)
         
-
+    
 # Mechanism :: Nodes part of Input state
 # Purview :: Nodes part of Output state
 # Repertoire :: row of “local TPM” that corresponds to selected state
@@ -828,16 +861,17 @@ class Net():
             n_list = range(N)
         else:
             i,j = zip(*edges)
-            minid = min(i)
-            maxid = max(j)
+            minid = min(i+j)
+            maxid = max(i+j)
             n_list = sorted(range(minid,maxid+1))
+        print(f'edges={edges} n_list={n_list}')
         nodes = [Node(id=i, label=Net.nn[i], num_states=SpN, func=func)
                  for i in n_list]
 
         # lut[label] -> Node
         self.node_lut = dict((n.label,n) for n in nodes)
         #invlut[i] -> label
-        invlut = dict(((v.id,v.label) for v in self.node_lut.values())) 
+        invlut = dict(((n.id,n.label) for n in self.node_lut.values())) 
             
         G.add_nodes_from(self.node_lut.keys())
         if edges is not None:
@@ -848,21 +882,101 @@ class Net():
 
 
         
-    def discover_tpm(self, time_steps=10, verbose=False):
-        #!dd = dict((n.label,n.id) for n in enumerate(self.nodes))
-        #!edges = [(dd[u],dd[v]) for (u,v) in self.graph.edges()]
-        ztc = Zaptc(net=self)
-        ztc.zapall(time_steps, verbose=verbose)
-        self.ztc = ztc
-        self.tpm = ztc.tpm_sbn   
+    def node_state_counts(self, node):
+        """Truth table of node.func run over all possible inputs.
+        Inputs are predecessor nodes with all possible states."""
+        #node = self.get_node(node_label)
+        preds = (self.get_node(l)
+                 for l in set(self.graph.predecessors(node.label)))
+        counter = Counter()
+        #! for sv in itertools.product(*[range(n.num_states) for n in preds]):
+        #!     ns = node.func(*sv)
+        #!     print(f'ns={ns}')
+        #!     counter.update([ns])
+        counter.update(node.func(*sv)
+                       for sv in itertools.product(*[range(n.num_states)
+                                                     for n in preds]))
+        return counter
 
+    def eval_node(self, node, system_state_tup):
+        preds_id = set([self.get_node(l).id
+                    for l in set(self.graph.predecessors(node.label))])
+        args = [system_state_tup[i] for i in preds_id]
+        return node.func(*args)
+        
+
+    def node_pd(self, node):
+        """Probability Distribution of NODE states given all possible inputs
+        constrained by graph."""
+        #node = self.get_node(node_label)
+        counts = self.node_state_counts(node)
+        total = sum(counts.values())
+        return [counts[i]/total for i in range(node.num_states)]
+
+
+    @property
+    def tpm(self):
+        """Iterate over all possible states(!!!) using node funcs
+        to calculate output state. State-to-State form. Allows non-binary"""
+        backwards=True  # I hate the order the papers use!!
+        allstates = list(itertools.product(*[range(n.num_states)
+                                             for n in self.nodes]))
+        N = len(self.nodes)
+        allstatesstr = [''.join([f'{s:x}' for s in sv]) for sv in allstates]
+        df = pd.DataFrame(index=allstatesstr,
+                          columns=[n.label for n in self.nodes]).fillna(0)
+        
+        for sv in allstates:
+            s0 = ''.join(f'{s:x}' for s in sv)
+            for i in range(N):
+                node = self.nodes[i]
+                nodestate = self.eval_node(node,sv)
+                df.loc[s0,node.label] =  nodestate
+
+        if backwards:
+            newindex= sorted(df.index, key= lambda lab: lab[::-1])
+            return df.reindex(index=newindex)
+        return df
+
+    def nodes_to_tpm(self, verbose=False):
+        """Iterate over all possible states(!!!) using node funcs
+        to calculate output state. State-to-Node form. binary nodes only"""
+        transitions = defaultdict(int) # transitions[(s0,s1)] => count
+        allstates = list(itertools.product(*[range(n.num_states)
+                                             for n in self.nodes]))
+        for sv in allstates:
+            s0 = ''.join(f'{s:x}' for s in sv)
+            sv1 = list(sv)
+            for i in range(len(sv)):
+                node = self.nodes[i]
+                cnt = self.node_state_counts(node)
+                for nodestate in range(node.num_states):
+                    sv1[i] = nodestate
+                    s1 = ''.join(f'{s:x}' for s in sv1)
+                    transitions[(s0,s1)] += cnt[nodestate]
+            # pad because pyphi requires full matrix
+            for sv1 in allstates:
+                s1 = ''.join(f'{s:x}' for s in sv1)                
+                transitions[(s0,s1)] += 0
+
+        # Convert counts to DF
+        allstatesstr = [''.join([f'{s:x}' for s in sv]) for sv in allstates]
+        allnodes = [n.label for n in self.nodes()]
+        df = pd.DataFrame(index=allstatesstr, columns=allnodes).fillna(0)
+        for ((s0,s1),count) in transitions.items():
+            df.loc[s0,s1] =  df.loc[s0,s1] + count
+            
+        # return normalized form
+        return df.fillna(0)
+    
+
+    
     @classmethod
     def candidate_mechanisms(cls, candidate_system):  
         ps = powerset(set(candidate_system)) # iterator
         return (ss for ss in ps if ss != ()) # remove empty, return GENERATOR 
 
     
-
     @property
     def cm(self):
         return nx.to_numpy_array(self.graph)
@@ -871,14 +985,10 @@ class Net():
     def df(self):
         return nx.to_pandas_adjacency(self.graph, nodelist=self.node_labels)
 
-
     @property
     def nodes(self):
         """Return list of all nodes in ID order."""
         return sorted(self.node_lut.values(), key=lambda n: n.id)
-
-    def node(self, node_id):
-        return list(self.node_lut.keys())[node_id]
 
     @property
     def node_labels(self):
@@ -913,9 +1023,22 @@ class Net():
                 # label='gnp_random_graph({N},{p})',
                 with_labels=True )
         return self
+
+    @property
+    def pyphi_network(self):
+        return Network(self.tpm.to_numpy(),
+                       cm=self.cm(),
+                       node_labels=self.nodes_labels)
     
+    def phi(self, statestr=None):
+        # first output state
+        if statestr is None:
+            statestr = choice(self.tpm.index)
+        state = [int(c) for c in list(statestr)] 
+        print(f'Calculating \u03A6 at state={state}')
+        node_indices = tuple(range(len(self.graph)))
+        subsystem = pyphi.Subsystem(self.legacy_network, state, node_indices)
+        return pyphi.compute.phi(subsystem)
+
             
-def tryit():
-    net = basic_noisy_selfloop_network()
-    tpm = net.tpm
     
